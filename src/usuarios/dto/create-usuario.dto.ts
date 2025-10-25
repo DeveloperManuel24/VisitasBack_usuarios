@@ -15,7 +15,7 @@ export class CreateUsuarioDto {
   email!: string;
 
   @IsString() @Length(8, 200)
-  hash!: string; // ya encriptado
+  hash!: string; // puede venir en texto plano y el service lo hashea si no empieza con $2
 
   @IsOptional() @IsBoolean()
   activo?: boolean = true;
@@ -23,7 +23,11 @@ export class CreateUsuarioDto {
   @IsOptional() @IsString() @Length(0, 50)
   supervisorId?: string;
 
-  // opcional: roles al crear (IDs de rol)
+  // ids de roles que le querés asignar al user al crear
   @IsOptional()
   roles?: string[];
+
+  // 👇 NUEVO
+  @IsOptional() @IsString()
+  fotoBase64?: string;
 }

@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { ILike, IsNull, Not, Repository, SelectQueryBuilder } from 'typeorm';
 import { Usuario } from './entities/usuario.entity';
@@ -26,13 +30,18 @@ export class UsuariosService {
     return (v ?? '').trim().toLowerCase();
   }
 
-  private normalizeSupervisorId(v: string | null | undefined): string | null {
+  private normalizeSupervisorId(
+    v: string | null | undefined,
+  ): string | null {
     if (v === undefined || v === null) return null;
     const s = String(v).trim();
     return s.length ? s : null; // "" -> null
   }
 
-  private baseQuery(includeDeleted = false, qb?: SelectQueryBuilder<Usuario>) {
+  private baseQuery(
+    includeDeleted = false,
+    qb?: SelectQueryBuilder<Usuario>,
+  ) {
     const query =
       qb ??
       this.userRepo
@@ -57,7 +66,9 @@ export class UsuariosService {
       where: { email, eliminadoEn: IsNull() },
       withDeleted: false,
     });
-    if (exists) throw new BadRequestException('El email ya está registrado');
+    if (exists) {
+      throw new BadRequestException('El email ya está registrado');
+    }
 
     // hash si viene en texto plano
     let passwordHash = dto.hash;
@@ -72,7 +83,9 @@ export class UsuariosService {
         where: { id: supervisorId, eliminadoEn: IsNull() },
       });
       if (!sup) {
-        throw new BadRequestException('El supervisor indicado no existe o está eliminado');
+        throw new BadRequestException(
+          'El supervisor indicado no existe o está eliminado',
+        );
       }
     }
 
@@ -83,6 +96,8 @@ export class UsuariosService {
       hash: passwordHash,
       activo: dto.activo ?? true,
       supervisorId,
+      // 👇 NUEVO
+      fotoBase64: dto.fotoBase64 ?? null,
     });
 
     let saved: Usuario;
@@ -91,7 +106,9 @@ export class UsuariosService {
     } catch (e: any) {
       if (e?.code === '23505') {
         // protegido por unique parcial en DB
-        throw new BadRequestException('El email ya está en uso por un usuario activo.');
+        throw new BadRequestException(
+          'El email ya está en uso por un usuario activo.',
+        );
       }
       throw e;
     }
@@ -99,6 +116,7 @@ export class UsuariosService {
     if (dto.roles?.length) {
       await this.setUserRoles(saved.id, dto.roles);
     }
+
     return this.findOne(saved.id);
   }
 
@@ -128,14 +146,21 @@ export class UsuariosService {
       qb = qb.andWhere('u.activo = :activo', { activo });
     }
     if (supervisorId?.trim()) {
-      qb = qb.andWhere('u.supervisorId = :sid', { sid: supervisorId.trim() });
+      qb = qb.andWhere('u.supervisorId = :sid', {
+        sid: supervisorId.trim(),
+      });
     }
     if (rolNombre?.trim()) {
       // búsqueda parcial por nombre de rol
-      qb = qb.andWhere('rol.nombre ILIKE :rn', { rn: `%${rolNombre.trim()}%` });
+      qb = qb.andWhere('rol.nombre ILIKE :rn', {
+        rn: `%${rolNombre.trim()}%`,
+      });
     }
 
-    qb = qb.orderBy('u.creadoEn', 'DESC').skip((page - 1) * limit).take(limit);
+    qb = qb
+      .orderBy('u.creadoEn', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
 
     const [data, total] = await qb.getManyAndCount();
 
@@ -166,15 +191,18 @@ export class UsuariosService {
     if (!user) throw new NotFoundException('Usuario no encontrado');
 
     // email único (activos)
-    let newEmail = dto.email ? this.normalizeEmail(dto.email) : undefined;
+    let newEmail = dto.email
+      ? this.normalizeEmail(dto.email)
+      : undefined;
     if (newEmail && newEmail !== user.email) {
       const emailTaken = await this.userRepo.findOne({
         where: { email: newEmail, id: Not(id), eliminadoEn: IsNull() },
       });
-      if (emailTaken)
+      if (emailTaken) {
         throw new BadRequestException(
           'El email ya está registrado por otro usuario',
         );
+      }
     }
 
     // re-hash si llega un nuevo hash en texto plano
@@ -194,7 +222,9 @@ export class UsuariosService {
         where: { id: incomingSupervisorId, eliminadoEn: IsNull() },
       });
       if (!sup) {
-        throw new BadRequestException('El supervisor indicado no existe o está eliminado');
+        throw new BadRequestException(
+          'El supervisor indicado no existe o está eliminado',
+        );
       }
     }
 
@@ -202,15 +232,23 @@ export class UsuariosService {
       nombre: dto.nombre ?? user.nombre,
       email: newEmail ?? user.email,
       hash: newHash ?? user.hash,
-      activo: typeof dto.activo === 'boolean' ? dto.activo : user.activo,
+      activo:
+        typeof dto.activo === 'boolean' ? dto.activo : user.activo,
       supervisorId: incomingSupervisorId,
+      // 👇 NUEVO: si vino fotoBase64 en el DTO de update, actualizarla
+      fotoBase64:
+        dto.fotoBase64 !== undefined
+          ? dto.fotoBase64
+          : user.fotoBase64 ?? null,
     });
 
     try {
       await this.userRepo.save(user);
     } catch (e: any) {
       if (e?.code === '23505') {
-        throw new BadRequestException('El email ya está en uso por un usuario activo.');
+        throw new BadRequestException(
+          'El email ya está en uso por un usuario activo.',
+        );
       }
       throw e;
     }
@@ -222,19 +260,57 @@ export class UsuariosService {
     return this.findOne(id);
   }
 
+  // ---------- Update foto solamente ----------
+
+  async updateFoto(
+    id: string,
+    fotoBase64: string,
+  ): Promise<{ ok: true; id: string }> {
+    const user = await this.userRepo.findOne({
+      where: { id, eliminadoEn: IsNull() },
+    });
+    if (!user) throw new NotFoundException('Usuario no encontrado');
+
+    user.fotoBase64 = fotoBase64 ?? null;
+
+    await this.userRepo.save(user);
+
+    return { ok: true, id };
+  }
+
   // ---------- Delete (soft) ----------
 
-  async remove(id: string): Promise<{ ok: true; id: string; eliminadoEn: string; alreadyDeleted?: boolean }> {
+  async remove(
+    id: string,
+  ): Promise<{
+    ok: true;
+    id: string;
+    eliminadoEn: string;
+    alreadyDeleted?: boolean;
+  }> {
     // permite borrar aunque ya esté eliminado
-    const user = await this.userRepo.findOne({ where: { id }, withDeleted: true });
+    const user = await this.userRepo.findOne({
+      where: { id },
+      withDeleted: true,
+    });
     if (!user) throw new NotFoundException('Usuario no existe');
 
     if (!user.eliminadoEn) {
       await this.userRepo.softRemove(user);
-      return { ok: true, id, eliminadoEn: new Date().toISOString(), alreadyDeleted: false };
+      return {
+        ok: true,
+        id,
+        eliminadoEn: new Date().toISOString(),
+        alreadyDeleted: false,
+      };
     }
     // ya estaba eliminado
-    return { ok: true, id, eliminadoEn: user.eliminadoEn.toISOString(), alreadyDeleted: true };
+    return {
+      ok: true,
+      id,
+      eliminadoEn: user.eliminadoEn.toISOString(),
+      alreadyDeleted: true,
+    };
   }
 
   // ---------- Roles ----------
@@ -246,9 +322,14 @@ export class UsuariosService {
     if (!user) throw new NotFoundException('Usuario no encontrado');
 
     const roles = await this.rolService.findByIds(rolesIds);
-    const missing = rolesIds.filter((rid) => !roles.find((r) => r.id === rid));
-    if (missing.length)
-      throw new BadRequestException(`Roles inexistentes: ${missing.join(', ')}`);
+    const missing = rolesIds.filter(
+      (rid) => !roles.find((r) => r.id === rid),
+    );
+    if (missing.length) {
+      throw new BadRequestException(
+        `Roles inexistentes: ${missing.join(', ')}`,
+      );
+    }
 
     await this.urRepo.delete({ usuarioId });
 

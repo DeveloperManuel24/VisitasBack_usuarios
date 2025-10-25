@@ -1,5 +1,14 @@
-// src/usuarios/usuarios.controller.ts
-import { Controller, Get, Post, Body, Patch, Param, Delete, Query } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+  Query,
+  BadRequestException,
+} from '@nestjs/common';
 import { UsuariosService } from './usuarios.service';
 import { CreateUsuarioDto } from './dto/create-usuario.dto';
 import { UpdateUsuarioDto } from './dto/update-usuario.dto';
@@ -35,7 +44,22 @@ export class UsuariosController {
   }
 
   @Post(':id/roles')
-  setRoles(@Param('id') id: string, @Body() body: { roles: string[] }) {
+  setRoles(
+    @Param('id') id: string,
+    @Body() body: { roles: string[] },
+  ) {
     return this.service.setUserRoles(id, body?.roles ?? []);
+  }
+
+  // 👇 NUEVO: subir / actualizar solo la foto
+  @Post(':id/foto')
+  async setFoto(
+    @Param('id') id: string,
+    @Body() body: { fotoBase64?: string },
+  ) {
+    if (!body?.fotoBase64 || body.fotoBase64.trim() === '') {
+      throw new BadRequestException('fotoBase64 requerida');
+    }
+    return this.service.updateFoto(id, body.fotoBase64);
   }
 }

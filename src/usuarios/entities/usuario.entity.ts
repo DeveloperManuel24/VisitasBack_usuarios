@@ -58,6 +58,10 @@ export class Usuario {
   @OneToMany(() => UsuarioRol, (ur) => ur.usuario, { cascade: true })
   usuariosRoles: UsuarioRol[];
 
+  // 👇 NUEVO: foto perfil en base64 (puede incluir el prefijo data:image/... o solo el base64)
+  @Column({ type: 'text', nullable: true })
+  fotoBase64?: string | null;
+
   @CreateDateColumn({ type: 'timestamptz' })
   creadoEn: Date;
 

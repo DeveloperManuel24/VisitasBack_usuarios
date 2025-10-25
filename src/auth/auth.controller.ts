@@ -1,17 +1,17 @@
-// src/auth/auth.controller.ts
-import { Controller, Post, UseGuards, Request, Get, Body } from '@nestjs/common';
+import { Controller, Post, UseGuards, Request, Body, Get } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { Public } from './decorators/public.decorator';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { JwtAuthGuard } from './guards/jwt-auth.guard';
 
 @Controller('auth')
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  // Pública: login
+  // login público (passport local)
   @Public()
   @UseGuards(LocalAuthGuard)
   @Post('login')
@@ -19,13 +19,14 @@ export class AuthController {
     return this.authService.login(req.user);
   }
 
-  // Protegida por guard global
+  // perfil (protegido)
+  @UseGuards(JwtAuthGuard)
   @Get('profile')
   async profile(@Request() req: any) {
     return req.user;
   }
 
-  // Públicas: forgot/reset
+  // forgot/reset públicos
   @Public()
   @Post('forgot-password')
   async forgot(@Body() dto: ForgotPasswordDto) {
@@ -38,10 +39,11 @@ export class AuthController {
     return this.authService.resetPassword(dto);
   }
 
-  // Protegida por guard global
+  // === EL ÚNICO ENDPOINT QUE PEDISTE: recibe { userId, newPassword } ===
+  @UseGuards(JwtAuthGuard)
   @Post('change-password')
   async change(@Request() req: any, @Body() dto: ChangePasswordDto) {
-    const userId = req.user?.sub ?? req.user?.userId; // compatible con tu JwtStrategy
-    return this.authService.changePassword(userId, dto);
+    // req.user proviene del JwtStrategy (debe contener sub/userId y roles)
+    return this.authService.changePassword(req.user, dto);
   }
 }
