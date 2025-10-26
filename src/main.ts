@@ -9,17 +9,16 @@ async function bootstrap() {
   app.use(bodyParser.json({ limit: '5mb' }))
   app.use(bodyParser.urlencoded({ limit: '5mb', extended: true }))
 
-  // CORS:
-  // - En dev usabas localhost:3002
-  // - En prod debe aceptar el dominio real del front
-  // - Para no trabarnos ahora, habilitamos ambos: el FRONTEND_URL y fallback "*"
-  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3002'
+  // Dominios permitidos
+  const PROD_FRONT = 'https://visitasfront-production.up.railway.app'
+  const LOCAL_FRONT_1 = 'http://localhost:3002'
+  const LOCAL_FRONT_2 = 'http://127.0.0.1:3002'
 
   app.enableCors({
-    origin: [frontendUrl, 'http://localhost:3002', 'http://127.0.0.1:3002', '*'],
-    credentials: true,
+    origin: [PROD_FRONT, LOCAL_FRONT_1, LOCAL_FRONT_2],
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: false, // usamos JWT manual, no cookies => false
   })
 
   const port = Number(process.env.PORT ?? 3000)
