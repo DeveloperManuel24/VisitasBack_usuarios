@@ -1,4 +1,11 @@
-import { Controller, Post, UseGuards, Request, Body, Get } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  UseGuards,
+  Request,
+  Body,
+  Get,
+} from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { Public } from './decorators/public.decorator';
@@ -39,11 +46,11 @@ export class AuthController {
     return this.authService.resetPassword(dto);
   }
 
-  // === EL ÚNICO ENDPOINT QUE PEDISTE: recibe { userId, newPassword } ===
+  // cambio de password (protegido con JWT)
   @UseGuards(JwtAuthGuard)
   @Post('change-password')
   async change(@Request() req: any, @Body() dto: ChangePasswordDto) {
-    // req.user proviene del JwtStrategy (debe contener sub/userId y roles)
+    // req.user viene de JwtStrategy -> { sub, email, roles, ... }
     return this.authService.changePassword(req.user, dto);
   }
 }

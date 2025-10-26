@@ -6,7 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { IsNull, Repository } from 'typeorm';
+  import { IsNull, Repository } from 'typeorm';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
 
@@ -47,7 +47,7 @@ export class AuthService {
       // hash bcrypt normal
       valid = await bcrypt.compare(password, storedHash);
     } else if (process.env.ALLOW_PLAINTEXT_PASSWORDS === 'true') {
-      // fallback legacy sin hash (solo si lo permitís explícitamente)
+      // modo legacy (solo si lo permitiste explícitamente)
       valid = password === storedHash;
     }
 
@@ -55,7 +55,7 @@ export class AuthService {
       throw new UnauthorizedException('Credenciales inválidas');
     }
 
-    // si guardaba texto plano antes, rehash inmediato con bcrypt
+    // Si la pass estaba en texto plano, la migramos a bcrypt de una vez
     if (!storedHash.startsWith('$2')) {
       const rehash = await bcrypt.hash(password, 10);
       await this.userRepo.update({ id: user.id }, { hash: rehash });
@@ -71,7 +71,8 @@ export class AuthService {
       .map((x) => x.rol?.nombre)
       .filter(Boolean) as string[];
 
-    // sacamos hash del objeto que devolvemos
+    // limpiamos hash antes de devolver
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { hash, ...safe } = user as any;
 
     return {
@@ -120,21 +121,17 @@ export class AuthService {
       process.env.JWT_RESET_SECRET || process.env.JWT_SECRET!;
     const expiresIn = process.env.JWT_RESET_EXPIRES || '30m';
 
-    // Base pública del frontend.
-    // ej dev:  http://localhost:3002
-    // ej prod: https://tu-dominio.com
-    // le quitamos cualquier slash final para evitar //reset-password
+    // Base pública del frontend
     const frontendBase = (
       process.env.FRONTEND_URL || 'http://localhost:3002'
     ).replace(/\/+$/, '');
 
-    // Si el usuario no existe o está inactivo, respondemos ok igual
-    // (para no revelar si el correo es válido)
+    // NO filtramos por "no existe". Decimos ok igual para no filtrar usuarios
     if (!user || !user.activo) {
       return { ok: true };
     }
 
-    // token especial SOLO para reset password
+    // token corto solo para reset password
     const payload = {
       sub: user.id,
       email: user.email,
@@ -146,21 +143,16 @@ export class AuthService {
       expiresIn,
     });
 
-    // URL que va en el correo.
-    // Esta ruta ya la creamos en Next: /reset-password/page.tsx
-    // y esa página lee ?token=<...> del query.
-    const link = `${frontendBase}/reset-password?token=${encodeURIComponent(
+    const link = `${frontendBase}/login/reset-password?token=${encodeURIComponent(
       token,
     )}`;
 
-    // mandar correo
     await this.gmail.sendPasswordReset(
       user.email,
       user.nombre || user.email,
       link,
     );
 
-    // En dev puedes querer ver el link sin abrir inbox
     const expose =
       String(
         process.env.EXPOSE_RESET_LINK_IN_RESPONSE || 'false',
@@ -184,12 +176,10 @@ export class AuthService {
       throw new UnauthorizedException('Token inválido o expirado');
     }
 
-    // validamos que sea un token de tipo "password_reset"
     if (decoded?.typ !== 'password_reset' || !decoded?.sub) {
       throw new UnauthorizedException('Token inválido');
     }
 
-    // buscamos el usuario
     const user = await this.userRepo.findOne({
       where: { id: decoded.sub, eliminadoEn: IsNull() },
     });
@@ -198,14 +188,12 @@ export class AuthService {
       throw new UnauthorizedException('Token inválido');
     }
 
-    // validación básica de nueva pass
     if (!dto.newPassword || dto.newPassword.length < 8) {
       throw new BadRequestException(
         'La contraseña debe tener al menos 8 caracteres',
       );
     }
 
-    // hash nueva pass y guardamos
     const hash = await bcrypt.hash(dto.newPassword, 10);
     await this.userRepo.update({ id: user.id }, { hash });
 
@@ -213,22 +201,44 @@ export class AuthService {
   }
 
   // ------------------ Permisos helper ------------------
+  /**
+   * Devuelve true si el caller es considerado "admin real"
+   * para efectos de poder cambiar contraseñas de OTROS usuarios.
+   *
+   * Reglas que alineamos con tu app:
+   * - Debe tener el rol exactamente "ADMINISTRADOR"
+   *   (tu front lo llama así, tu listado lo pinta así).
+   *
+   * Si quieres que SUPERVISOR también pueda,
+   * descomenta la parte marcada.
+   */
   private isAdminLike(roles: string[] | undefined): boolean {
     if (!roles) return false;
-    return (
-      roles.includes('admin') ||
-      roles.includes('ADMIN') ||
-      roles.includes('supervisor') ||
-      roles.includes('SUPERVISOR')
-    );
+
+    const upper = roles.map((r) => (r ?? '').toUpperCase().trim());
+
+    if (upper.includes('ADMINISTRADOR')) {
+      return true;
+    }
+
+    // 👉 si quieres que un SUPERVISOR también pueda cambiar pass de cualquiera,
+    //    descomenta esto:
+    //
+    // if (upper.includes('SUPERVISOR')) {
+    //   return true;
+    // }
+
+    return false;
   }
 
-  // ------------------ CHANGE PASSWORD (minimal DTO: userId + newPassword) ------------------
+  // ------------------ CHANGE PASSWORD ------------------
   /**
    * Reglas:
-   * - El endpoint recibe solo { userId, newPassword } (ChangePasswordDto)
-   * - Si caller tiene rol admin/supervisor -> puede cambiar ANY user
-   * - Si caller NO tiene rol admin -> solo puede cambiar su propia contraseña (callerId === userId)
+   * - Recibe { userId, newPassword }
+   * - Si caller tiene rol ADMINISTRADOR -> puede cambiar la pass de cualquiera
+   * - Si NO, solo puede cambiar su propia pass (callerId === userId)
+   *
+   * Si viola eso -> ForbiddenException (403)
    */
   async changePassword(
     callerUser: { sub?: string; userId?: string; roles?: string[] },
@@ -239,44 +249,42 @@ export class AuthService {
       throw new ForbiddenException('Token inválido');
     }
 
-    // usuario target al que le queremos cambiar la pass
+    const { userId, newPassword } = dto;
+
+    // buscar target user
     const target = await this.userRepo.findOne({
-      where: { id: dto.userId, eliminadoEn: IsNull() },
+      where: { id: userId, eliminadoEn: IsNull() },
     });
 
     if (!target || !target.activo) {
-      throw new NotFoundException(
-        'Usuario destino no disponible',
-      );
+      throw new NotFoundException('Usuario destino no disponible');
     }
 
-    // permisos:
-    // - admin/supervisor puede cambiar la pass de cualquiera
-    // - user normal solo la suya propia
+    // quién tiene permiso:
     const callerRoles = callerUser.roles ?? [];
     const callerIsAdmin = this.isAdminLike(callerRoles);
 
-    if (!callerIsAdmin && callerId !== target.id) {
+    const isSelf = callerId === target.id;
+
+    if (!callerIsAdmin && !isSelf) {
+      // este mensaje aparece en tu modal, keep it
       throw new ForbiddenException(
-        'No tienes permiso para cambiar la contraseña de otro usuario',
+        'No tienes permiso para cambiar la contraseña de este usuario.',
       );
     }
 
-    // validación de newPassword
-    if (!dto.newPassword || dto.newPassword.length < 8) {
+    // validación básica de la nueva pass
+    if (!newPassword || newPassword.length < 8) {
       throw new BadRequestException(
         'La contraseña nueva debe tener al menos 8 caracteres',
       );
     }
 
-    // evitar reusar la misma contraseña anterior
+    // opcional: evitar reutilizar la anterior
     const prevHash = target.hash ?? '';
     if (prevHash) {
       if (prevHash.startsWith('$2')) {
-        const same = await bcrypt.compare(
-          dto.newPassword,
-          prevHash,
-        );
+        const same = await bcrypt.compare(newPassword, prevHash);
         if (same) {
           throw new BadRequestException(
             'La nueva contraseña no puede ser igual a la anterior',
@@ -284,7 +292,7 @@ export class AuthService {
         }
       } else if (
         process.env.ALLOW_PLAINTEXT_PASSWORDS === 'true' &&
-        dto.newPassword === prevHash
+        newPassword === prevHash
       ) {
         throw new BadRequestException(
           'La nueva contraseña no puede ser igual a la anterior',
@@ -292,8 +300,8 @@ export class AuthService {
       }
     }
 
-    // hasheamos y guardamos
-    const newHash = await bcrypt.hash(dto.newPassword, 10);
+    // hash nueva pass y guardar
+    const newHash = await bcrypt.hash(newPassword, 10);
     await this.userRepo.update({ id: target.id }, { hash: newHash });
 
     return {

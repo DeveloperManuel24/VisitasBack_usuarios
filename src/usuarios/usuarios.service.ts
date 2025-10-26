@@ -4,7 +4,12 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, IsNull, Not, Repository, SelectQueryBuilder } from 'typeorm';
+import {
+  IsNull,
+  Not,
+  Repository,
+  SelectQueryBuilder,
+} from 'typeorm';
 import { Usuario } from './entities/usuario.entity';
 import { UsuarioRol } from './entities/usuario-rol.entity';
 import { CreateUsuarioDto } from './dto/create-usuario.dto';
@@ -58,10 +63,21 @@ export class UsuariosService {
 
   // ---------- Create ----------
 
-  async create(dto: CreateUsuarioDto): Promise<Usuario> {
-    const email = this.normalizeEmail(dto.email);
+  async create(
+    rawDto: CreateUsuarioDto | null | undefined,
+  ): Promise<Usuario> {
+    if (!rawDto) {
+      throw new BadRequestException('Body requerido');
+    }
 
-    // único entre activos
+    const dto: CreateUsuarioDto = rawDto as any;
+
+    // ===== email obligatorio y único =====
+    const email = this.normalizeEmail(dto.email);
+    if (!email) {
+      throw new BadRequestException('Email requerido');
+    }
+
     const exists = await this.userRepo.findOne({
       where: { email, eliminadoEn: IsNull() },
       withDeleted: false,
@@ -70,42 +86,54 @@ export class UsuariosService {
       throw new BadRequestException('El email ya está registrado');
     }
 
-    // hash si viene en texto plano
+    // ===== password/hash obligatorio =====
     let passwordHash = dto.hash;
-    if (passwordHash && !passwordHash.startsWith('$2')) {
+    if (!passwordHash || !String(passwordHash).trim()) {
+      throw new BadRequestException('Contraseña requerida');
+    }
+    if (!passwordHash.startsWith('$2')) {
       passwordHash = await bcrypt.hash(passwordHash, 10);
     }
 
-    // supervisorId "" -> null y validación de existencia
-    const supervisorId = this.normalizeSupervisorId(dto.supervisorId ?? null);
-    if (supervisorId) {
+    // ===== supervisorId (relajado) =====
+    let finalSupervisorId = this.normalizeSupervisorId(
+      dto.supervisorId ?? null,
+    );
+
+    if (finalSupervisorId) {
+      // buscamos incluso soft-deleted para no romper creación
       const sup = await this.userRepo.findOne({
-        where: { id: supervisorId, eliminadoEn: IsNull() },
+        where: { id: finalSupervisorId },
+        withDeleted: true,
       });
+
       if (!sup) {
-        throw new BadRequestException(
-          'El supervisor indicado no existe o está eliminado',
-        );
+        // si no existe en absoluto, en vez de tirar error lo dejamos null
+        finalSupervisorId = null;
       }
     }
 
+    // ===== crear entidad base =====
     const entity = this.userRepo.create({
       id: genId(),
-      nombre: dto.nombre,
+      nombre: dto.nombre ?? '',
       email,
       hash: passwordHash,
-      activo: dto.activo ?? true,
-      supervisorId,
-      // 👇 NUEVO
-      fotoBase64: dto.fotoBase64 ?? null,
+      activo:
+        typeof dto.activo === 'boolean' ? dto.activo : true,
+      supervisorId: finalSupervisorId,
+      fotoBase64:
+        dto.fotoBase64 !== undefined && dto.fotoBase64 !== null
+          ? dto.fotoBase64
+          : null,
     });
 
+    // ===== guardar user base =====
     let saved: Usuario;
     try {
       saved = await this.userRepo.save(entity);
     } catch (e: any) {
       if (e?.code === '23505') {
-        // protegido por unique parcial en DB
         throw new BadRequestException(
           'El email ya está en uso por un usuario activo.',
         );
@@ -113,10 +141,12 @@ export class UsuariosService {
       throw e;
     }
 
-    if (dto.roles?.length) {
+    // ===== roles iniciales =====
+    if (Array.isArray(dto.roles) && dto.roles.length) {
       await this.setUserRoles(saved.id, dto.roles);
     }
 
+    // ===== devolver usuario con joins =====
     return this.findOne(saved.id);
   }
 
@@ -133,25 +163,30 @@ export class UsuariosService {
     } = query;
 
     // soporta ?incluirEliminados=true aunque tu DTO aún no lo tenga
-    const incluirEliminados = Boolean((query as any)?.incluirEliminados);
+    const incluirEliminados = Boolean(
+      (query as any)?.incluirEliminados,
+    );
 
     let qb = this.baseQuery(incluirEliminados);
 
     if (q?.trim()) {
-      qb = qb.andWhere('(u.nombre ILIKE :q OR u.email ILIKE :q)', {
-        q: `%${q.trim()}%`,
-      });
+      qb = qb.andWhere(
+        '(u.nombre ILIKE :q OR u.email ILIKE :q)',
+        { q: `%${q.trim()}%` },
+      );
     }
+
     if (typeof activo === 'boolean') {
       qb = qb.andWhere('u.activo = :activo', { activo });
     }
+
     if (supervisorId?.trim()) {
       qb = qb.andWhere('u.supervisorId = :sid', {
         sid: supervisorId.trim(),
       });
     }
+
     if (rolNombre?.trim()) {
-      // búsqueda parcial por nombre de rol
       qb = qb.andWhere('rol.nombre ILIKE :rn', {
         rn: `%${rolNombre.trim()}%`,
       });
@@ -176,72 +211,113 @@ export class UsuariosService {
   }
 
   async findOne(id: string): Promise<Usuario> {
-    const qb = this.baseQuery(false).andWhere('u.id = :id', { id });
+    const qb = this.baseQuery(false).andWhere('u.id = :id', {
+      id,
+    });
     const found = await qb.getOne();
-    if (!found) throw new NotFoundException('Usuario no encontrado');
+    if (!found)
+      throw new NotFoundException('Usuario no encontrado');
     return found;
   }
 
   // ---------- Update ----------
 
-  async update(id: string, dto: UpdateUsuarioDto): Promise<Usuario> {
+  async update(
+    id: string,
+    dto?: UpdateUsuarioDto | null,
+  ): Promise<Usuario> {
+    const safeDto: UpdateUsuarioDto = dto ?? {};
+
+    // buscar usuario vivo
     const user = await this.userRepo.findOne({
       where: { id, eliminadoEn: IsNull() },
     });
-    if (!user) throw new NotFoundException('Usuario no encontrado');
+    if (!user)
+      throw new NotFoundException('Usuario no encontrado');
 
-    // email único (activos)
-    let newEmail = dto.email
-      ? this.normalizeEmail(dto.email)
-      : undefined;
-    if (newEmail && newEmail !== user.email) {
-      const emailTaken = await this.userRepo.findOne({
-        where: { email: newEmail, id: Not(id), eliminadoEn: IsNull() },
-      });
-      if (emailTaken) {
+    // EMAIL (único entre activos) -> solo si vino en el body
+    let newEmail: string | undefined = undefined;
+    if (safeDto.email !== undefined) {
+      const normalized = this.normalizeEmail(
+        safeDto.email,
+      );
+
+      if (!normalized) {
         throw new BadRequestException(
-          'El email ya está registrado por otro usuario',
+          'Email no puede ser vacío',
         );
+      }
+
+      newEmail = normalized;
+
+      if (newEmail !== user.email) {
+        const emailTaken = await this.userRepo.findOne({
+          where: {
+            email: newEmail,
+            id: Not(id),
+            eliminadoEn: IsNull(),
+          },
+        });
+        if (emailTaken) {
+          throw new BadRequestException(
+            'El email ya está registrado por otro usuario',
+          );
+        }
       }
     }
 
-    // re-hash si llega un nuevo hash en texto plano
-    let newHash = dto.hash;
-    if (newHash && !newHash.startsWith('$2')) {
-      newHash = await bcrypt.hash(newHash, 10);
+    // HASH (password) -> si vino hash y no es bcrypt, lo hasheamos
+    let newHash = safeDto.hash;
+    if (newHash) {
+      if (!newHash.startsWith('$2')) {
+        newHash = await bcrypt.hash(newHash, 10);
+      }
     }
 
-    // supervisorId: undefined -> mantener; "" -> null; validar si viene id
-    const incomingSupervisorId =
-      dto.supervisorId === undefined
-        ? user.supervisorId ?? null
-        : this.normalizeSupervisorId(dto.supervisorId);
+    // SUPERVISOR (relajado):
+    // - undefined  -> deja el actual
+    // - ""         -> null
+    // - "algo"     -> si no existe, lo bajamos a null (no rompemos)
+    let incomingSupervisorId: string | null;
+    if (safeDto.supervisorId === undefined) {
+      incomingSupervisorId = user.supervisorId ?? null;
+    } else {
+      incomingSupervisorId = this.normalizeSupervisorId(
+        safeDto.supervisorId,
+      );
+    }
 
     if (incomingSupervisorId) {
       const sup = await this.userRepo.findOne({
-        where: { id: incomingSupervisorId, eliminadoEn: IsNull() },
+        where: { id: incomingSupervisorId },
+        withDeleted: true,
       });
       if (!sup) {
-        throw new BadRequestException(
-          'El supervisor indicado no existe o está eliminado',
-        );
+        // si no existe de verdad, lo forzamos null
+        incomingSupervisorId = null;
       }
     }
 
+    // FOTO:
+    const nuevaFoto =
+      safeDto.fotoBase64 !== undefined
+        ? safeDto.fotoBase64
+        : user.fotoBase64 ?? null;
+
+    // aplicar cambios sobre la entidad cargada
     Object.assign(user, {
-      nombre: dto.nombre ?? user.nombre,
+      nombre: safeDto.nombre ?? user.nombre,
       email: newEmail ?? user.email,
       hash: newHash ?? user.hash,
       activo:
-        typeof dto.activo === 'boolean' ? dto.activo : user.activo,
+        typeof safeDto.activo === 'boolean'
+          ? safeDto.activo
+          : user.activo,
       supervisorId: incomingSupervisorId,
-      // 👇 NUEVO: si vino fotoBase64 en el DTO de update, actualizarla
-      fotoBase64:
-        dto.fotoBase64 !== undefined
-          ? dto.fotoBase64
-          : user.fotoBase64 ?? null,
+      fotoBase64: nuevaFoto,
     });
 
+    // guardar
     try {
       await this.userRepo.save(user);
     } catch (e: any) {
@@ -253,10 +329,14 @@ export class UsuariosService {
       throw e;
     }
 
-    if (dto.roles) {
-      await this.setUserRoles(id, dto.roles);
+    // ROLES:
+    // si mando "roles" en el patch, actualizo roles.
+    // si NO lo mando, no toco roles existentes.
+    if (safeDto.roles !== undefined) {
+      await this.setUserRoles(id, safeDto.roles);
     }
 
+    // devolver usuario ya con joins
     return this.findOne(id);
   }
 
@@ -269,7 +349,8 @@ export class UsuariosService {
     const user = await this.userRepo.findOne({
       where: { id, eliminadoEn: IsNull() },
     });
-    if (!user) throw new NotFoundException('Usuario no encontrado');
+    if (!user)
+      throw new NotFoundException('Usuario no encontrado');
 
     user.fotoBase64 = fotoBase64 ?? null;
 
@@ -293,7 +374,8 @@ export class UsuariosService {
       where: { id },
       withDeleted: true,
     });
-    if (!user) throw new NotFoundException('Usuario no existe');
+    if (!user)
+      throw new NotFoundException('Usuario no existe');
 
     if (!user.eliminadoEn) {
       await this.userRepo.softRemove(user);
@@ -304,6 +386,7 @@ export class UsuariosService {
         alreadyDeleted: false,
       };
     }
+
     // ya estaba eliminado
     return {
       ok: true,
@@ -315,13 +398,24 @@ export class UsuariosService {
 
   // ---------- Roles ----------
 
-  async setUserRoles(usuarioId: string, rolesIds: string[]) {
+  async setUserRoles(
+    usuarioId: string,
+    rolesIds: string[],
+  ) {
     const user = await this.userRepo.findOne({
       where: { id: usuarioId, eliminadoEn: IsNull() },
     });
-    if (!user) throw new NotFoundException('Usuario no encontrado');
+    if (!user)
+      throw new NotFoundException('Usuario no encontrado');
 
-    const roles = await this.rolService.findByIds(rolesIds);
+    if (!Array.isArray(rolesIds)) {
+      rolesIds = [];
+    }
+
+    const roles = rolesIds.length
+      ? await this.rolService.findByIds(rolesIds)
+      : [];
+
     const missing = rolesIds.filter(
       (rid) => !roles.find((r) => r.id === rid),
     );
@@ -331,15 +425,19 @@ export class UsuariosService {
       );
     }
 
+    // limpiamos roles actuales
     await this.urRepo.delete({ usuarioId });
 
-    const nuevos = roles.map((r) =>
-      this.urRepo.create({
-        id: genId(),
-        usuarioId,
-        rolId: r.id,
-      }),
-    );
-    await this.urRepo.save(nuevos);
+    // insertamos nuevos
+    if (roles.length) {
+      const nuevos = roles.map((r) =>
+        this.urRepo.create({
+          id: genId(),
+          usuarioId,
+          rolId: r.id,
+        }),
+      );
+      await this.urRepo.save(nuevos);
+    }
   }
 }

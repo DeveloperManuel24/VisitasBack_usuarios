@@ -10,7 +10,6 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { UsuariosService } from './usuarios.service';
-import { CreateUsuarioDto } from './dto/create-usuario.dto';
 import { UpdateUsuarioDto } from './dto/update-usuario.dto';
 import { QueryUsuarioDto } from './dto/query-usuario.dto';
 
@@ -19,8 +18,10 @@ export class UsuariosController {
   constructor(private readonly service: UsuariosService) {}
 
   @Post()
-  create(@Body() dto: CreateUsuarioDto) {
-    return this.service.create(dto);
+  create(@Body() body: any) {
+    // log defensivo para confirmar qué llega realmente
+    // console.log('>> POST /usuarios body =', body);
+    return this.service.create(body);
   }
 
   @Get()
@@ -51,7 +52,6 @@ export class UsuariosController {
     return this.service.setUserRoles(id, body?.roles ?? []);
   }
 
-  // 👇 NUEVO: subir / actualizar solo la foto
   @Post(':id/foto')
   async setFoto(
     @Param('id') id: string,
