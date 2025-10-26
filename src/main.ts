@@ -5,15 +5,18 @@ import * as bodyParser from 'body-parser'
 async function bootstrap() {
   const app = await NestFactory.create(AppModule)
 
-  // ⬆ permitir JSON "grande" (para fotoBase64 en PATCH /usuarios)
-  // - 5mb suele ser suficiente para una foto de perfil decente
-  // - también ampliamos urlencoded por si en el futuro mandas forms
+  // permitir JSON grande (fotos base64, etc.)
   app.use(bodyParser.json({ limit: '5mb' }))
   app.use(bodyParser.urlencoded({ limit: '5mb', extended: true }))
 
-  // permitir que el front en 3002 llame a este backend
+  // CORS:
+  // - En dev usabas localhost:3002
+  // - En prod debe aceptar el dominio real del front
+  // - Para no trabarnos ahora, habilitamos ambos: el FRONTEND_URL y fallback "*"
+  const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3002'
+
   app.enableCors({
-    origin: 'http://localhost:3002',
+    origin: [frontendUrl, 'http://localhost:3002', 'http://127.0.0.1:3002', '*'],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],
@@ -21,7 +24,7 @@ async function bootstrap() {
 
   const port = Number(process.env.PORT ?? 3000)
   await app.listen(port)
-  console.log(`Usuarios/Roles API listening on http://localhost:${port}`)
+  console.log(`API escuchando en puerto ${port}`)
 }
 
 bootstrap()

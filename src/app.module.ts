@@ -15,14 +15,20 @@ import { GmailModule } from './gmail/gmail.module'
       inject: [ConfigService],
       useFactory: (cfg: ConfigService) => ({
         type: 'postgres',
+
         host: cfg.get<string>('DB_HOST'),
         port: Number(cfg.get('DB_PORT')),
         database: cfg.get<string>('DB_NAME'),
         username: cfg.get<string>('DB_USER'),
         password: String(cfg.get('DB_PASS') ?? ''),
+
         autoLoadEntities: true,
         synchronize: false,
-        ssl: false,
+
+        // 🔐 IMPORTANTE: Heroku Postgres exige SSL desde Railway
+        ssl: {
+          rejectUnauthorized: false,
+        },
       }),
     }),
     UsuariosModule,
@@ -31,11 +37,8 @@ import { GmailModule } from './gmail/gmail.module'
     GmailModule,
   ],
   providers: [
-    // ⛔ OJO: sacamos el APP_GUARD global para que no pida JWT
-    // {
-    //   provide: APP_GUARD,
-    //   useClass: JwtAuthGuard,
-    // },
+    // Si más adelante querés proteger todo con JWT global,
+    // aquí volverías a meter APP_GUARD con JwtAuthGuard.
   ],
 })
 export class AppModule {}
